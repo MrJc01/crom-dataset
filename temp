@@ -1,0 +1,705 @@
+Gemini
+Arquitetura de Dataset com Hugging Face
+Conversa com o Gemini
+to pensando em criar um dataset da crom, onde organizaremos para quem quiser completo e funcional de dataset de arquivos, de todos os tipos de arquivos publicos, podendo escollher maneiras de pesquisar, como um editor de video, programador, etc etc
+
+
+
+para usar a api paga, mas o acesso é gratuito, hospedar onde ? no huggingface todos os arquivos de forma privada e criar uma aplicação em go que consulta tudo corretamente para o site e api ?
+
+Essa ideia de centralizar ativos públicos com uma curadoria baseada em personas (editor, dev, etc.) é de um valor absurdo, Juan. Resolve aquele problema clássico de perder horas filtrando lixo em repositórios genéricos.
+
+Sobre a sua estratégia técnica, ela faz bastante sentido, mas tem alguns "pulos do gato" para garantir que a performance não sofra e que os custos não escalem errado.
+
+A Estrutura no Hugging Face (HF)
+O Hugging Face é excelente para isso, mas ele funciona melhor quando você separa a lógica de busca dos arquivos brutos.
+
+Dataset Privado: É o caminho certo para proteger o core do seu produto. Você gera um Read Token e sua aplicação Go faz o papel de ponte (Proxy).
+
+Formato dos Metadados: Recomendo guardar o índice (o que é cada arquivo, tags, persona) em arquivos Parquet. O HF consegue ler partes desses arquivos sem baixar tudo, o que economiza banda e memória.
+
+Armazenamento de Binários: Use o LFS (Large File Storage) do próprio HF para os arquivos pesados (vídeos, assets, builds).
+
+O Papel do Go na Arquitetura
+Usar Go aqui é a escolha de um arquiteto que pensa em concorrência. A aplicação faria o seguinte:
+
+Middleware de Autenticação: Valida se a requisição vem da API paga ou do acesso gratuito.
+
+Cache de Busca: Em vez de consultar o Hugging Face a cada "search" do usuário, sua API em Go pode manter um índice local (usando algo como Bleve ou até um SQLite bem estruturado) para buscas instantâneas.
+
+Stream de Downloads: O Go recebe o stream do HF e repassa para o usuário. Isso evita que você precise de muito espaço em disco no servidor da API, já que os dados "passam" por ela sem necessariamente serem salvos.
+
+Sugestão de Fluxo
+Indexação: Um script (pode ser em Go ou Python) varre os arquivos, gera o Parquet com os metadados e sobe pro HF.
+
+Consumo:
+
+O site (React/TS) chama sua API.
+
+A API em Go consulta o índice local/cache.
+
+Se o usuário pedir o download, o Go busca no HF usando o token privado e entrega o arquivo.
+
+Onde a filosofia Crom entra nisso?
+Como você foca muito em soberania digital e local-first, vale considerar:
+
+Deduplicação: Use a lógica do seu Crompressor antes de subir os arquivos. Se tiver o mesmo asset para "Editor de Vídeo" e "Designer", você armazena uma vez só e apenas aponta os metadados.
+
+Disponibilidade: Para o acesso gratuito, você pode limitar a velocidade no Go, enquanto a API paga tem prioridade total e talvez acesso a metadados mais profundos (como análise técnica dos arquivos).
+
+Um ponto de atenção: O Hugging Face tem políticas de uso para quando você usa o "storage" deles puramente como um CDN de arquivos para uma aplicação externa massiva. Se o tráfego crescer muito, talvez você precise espelhar os arquivos mais populares em um Cloudflare R2 (que tem egress gratuito) para não tomar um bloqueio ou instabilidade.
+
+Você já pensou em como vai estruturar a taxonomia dessas personas? Um arquivo de vídeo pode ser útil para um dev (testando codec) e para um editor (asset real). Essa "etiquetagem" vai ser o coração do dataset.
+
+
+
+
+
+O Gemini é uma IA e pode cometer erros.
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenData Hub - Seus Arquivos Públicos</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar for better UI */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8; 
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col text-gray-800 antialiased selection:bg-brand-500 selection:text-white">
+
+    <!-- Navigation -->
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <!-- Logo & Left Links -->
+                <div class="flex items-center">
+                    <a href="#" class="flex-shrink-0 flex items-center gap-2 group">
+                        <div class="bg-brand-600 text-white p-1.5 rounded-lg group-hover:bg-brand-500 transition-colors">
+                            <i class="ph ph-database text-2xl"></i>
+                        </div>
+                        <span class="font-bold text-xl tracking-tight text-gray-900 group-hover:text-brand-600 transition-colors">OpenData<span class="font-light text-gray-500">Hub</span></span>
+                    </a>
+                    <div class="hidden sm:ml-8 sm:flex sm:space-x-4">
+                        <a href="#" class="border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50 px-3 py-2 rounded-md text-sm font-medium transition-colors">Explorar</a>
+                        <a href="#" class="border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50 px-3 py-2 rounded-md text-sm font-medium transition-colors">Coleções</a>
+                        <a href="#" class="border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50 px-3 py-2 rounded-md text-sm font-medium transition-colors">Comunidade</a>
+                    </div>
+                </div>
+
+                <!-- Right side (Search & Profile) -->
+                <div class="flex items-center gap-4">
+                    <!-- Global Search (Desktop) -->
+                    <div class="hidden md:flex flex-1 items-center max-w-sm ml-4">
+                        <div class="relative w-full group">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <i class="ph ph-magnifying-glass text-gray-400 group-focus-within:text-brand-500 transition-colors"></i>
+                            </div>
+                            <input type="text" placeholder="Buscar datasets, arquivos, autores..." class="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-full leading-5 bg-gray-50 placeholder-gray-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 sm:text-sm transition-all duration-200">
+                        </div>
+                    </div>
+                    
+                    <button class="p-2 text-gray-400 hover:text-gray-500 hover:bg-gray-100 rounded-full transition-colors relative">
+                        <span class="absolute top-1.5 right-1.5 block h-2 w-2 rounded-full bg-red-400 ring-2 ring-white"></span>
+                        <i class="ph ph-bell text-xl"></i>
+                    </button>
+                    
+                    <!-- Profile dropdown -->
+                    <div class="ml-1 relative flex-shrink-0">
+                        <div>
+                            <button type="button" class="bg-white rounded-full flex text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 ring-offset-white" id="user-menu-button" aria-expanded="false" aria-haspopup="true">
+                                <span class="sr-only">Abrir menu do usuário</span>
+                                <img class="h-9 w-9 rounded-full object-cover border border-gray-200" src="https://ui-avatars.com/api/?name=User&background=eff6ff&color=2563eb" alt="">
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Mobile menu button -->
+                    <div class="flex items-center sm:hidden ml-2">
+                        <button type="button" class="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-brand-500" aria-controls="mobile-menu" aria-expanded="false">
+                            <span class="sr-only">Abrir menu principal</span>
+                            <i class="ph ph-list text-2xl"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col overflow-hidden bg-gray-50">
+        
+        <!-- Hero Section -->
+        <div class="bg-white border-b border-gray-200 py-10 px-4 sm:px-6 lg:px-8 text-center">
+            <h1 class="text-4xl tracking-tight font-extrabold text-gray-900 sm:text-5xl md:text-6xl mb-4">
+                <span class="block">Encontre os arquivos certos</span>
+                <span class="block text-brand-600">para o seu próximo projeto</span>
+            </h1>
+            <p class="mt-3 max-w-md mx-auto text-base text-gray-500 sm:text-lg md:mt-5 md:text-xl md:max-w-3xl">
+                Acesse milhares de arquivos públicos, de vídeos em 4K a bancos de dados SQL, imagens RAW a modelos 3D.
+            </p>
+        </div>
+
+        <div class="flex-1 flex flex-col lg:flex-row overflow-hidden max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 gap-6">
+            
+            <!-- Sidebar / Filters -->
+            <aside class="w-full lg:w-64 flex-shrink-0 flex flex-col gap-6 overflow-y-auto pr-2 pb-10">
+                
+                <!-- Quick Profiles -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Pesquisa por Perfil</h3>
+                    <div class="space-y-2">
+                        <button onclick="setProfile('video')" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-brand-50 hover:text-brand-700 transition-colors group">
+                            <i class="ph ph-film-strip text-lg text-gray-400 group-hover:text-brand-500"></i>
+                            Editor de Vídeo
+                        </button>
+                        <button onclick="setProfile('dev')" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-brand-50 hover:text-brand-700 transition-colors group">
+                            <i class="ph ph-code text-lg text-gray-400 group-hover:text-brand-500"></i>
+                            Programador / Data
+                        </button>
+                        <button onclick="setProfile('design')" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-brand-50 hover:text-brand-700 transition-colors group">
+                            <i class="ph ph-paint-brush-broad text-lg text-gray-400 group-hover:text-brand-500"></i>
+                            Designer
+                        </button>
+                        <button onclick="setProfile('all')" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-900 transition-colors" id="btn-profile-all">
+                            <i class="ph ph-squares-four text-lg text-gray-500"></i>
+                            Todos os Arquivos
+                        </button>
+                    </div>
+                </div>
+
+                <!-- File Types Filter -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Tipo de Arquivo</h3>
+                    <div class="space-y-3" id="file-type-filters">
+                        <!-- Generative content here via JS -->
+                    </div>
+                </div>
+
+                <!-- License Filter -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Licença</h3>
+                    <div class="space-y-3">
+                        <label class="flex items-center gap-3">
+                            <input type="checkbox" checked class="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded cursor-pointer">
+                            <span class="text-sm text-gray-700 cursor-pointer">Domínio Público (CC0)</span>
+                        </label>
+                        <label class="flex items-center gap-3">
+                            <input type="checkbox" checked class="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded cursor-pointer">
+                            <span class="text-sm text-gray-700 cursor-pointer">Atribuição (CC BY)</span>
+                        </label>
+                        <label class="flex items-center gap-3">
+                            <input type="checkbox" class="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded cursor-pointer">
+                            <span class="text-sm text-gray-700 cursor-pointer">Uso Comercial Permitido</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Size Filter -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Tamanho Máximo</h3>
+                    <input type="range" min="1" max="100" value="100" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-brand-600">
+                    <div class="flex justify-between text-xs text-gray-500 mt-2">
+                        <span>1 MB</span>
+                        <span>Qualquer</span>
+                    </div>
+                </div>
+
+            </aside>
+
+            <!-- Main Content Area (Results) -->
+            <div class="flex-1 flex flex-col h-full overflow-hidden bg-white rounded-xl shadow-sm border border-gray-100 relative">
+                
+                <!-- Results Toolbar -->
+                <div class="border-b border-gray-100 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white z-10 rounded-t-xl">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-gray-700" id="results-count">Mostrando 124 resultados</span>
+                        <span class="text-sm text-gray-400 hidden sm:inline">|</span>
+                        <div class="flex items-center text-sm text-gray-500 hidden sm:flex">
+                            Perfil ativo: <span id="active-profile-label" class="ml-1 font-medium text-brand-600 bg-brand-50 px-2 py-0.5 rounded-full">Todos</span>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <!-- Sort Dropdown -->
+                        <div class="relative w-full sm:w-auto">
+                            <select class="block w-full sm:w-auto pl-3 pr-10 py-1.5 text-sm border-gray-300 focus:outline-none focus:ring-brand-500 focus:border-brand-500 sm:text-sm rounded-md bg-gray-50 border cursor-pointer appearance-none">
+                                <option>Mais Relevantes</option>
+                                <option>Mais Recentes</option>
+                                <option>Mais Baixados</option>
+                                <option>Tamanho (Maior primeiro)</option>
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
+                                <i class="ph ph-caret-down text-xs"></i>
+                            </div>
+                        </div>
+
+                        <!-- View Toggle -->
+                        <div class="flex items-center bg-gray-100 rounded-md p-0.5 border border-gray-200">
+                            <button class="p-1.5 bg-white text-gray-800 shadow-sm rounded flex items-center justify-center transition-colors">
+                                <i class="ph ph-squares-four text-lg"></i>
+                            </button>
+                            <button class="p-1.5 text-gray-500 hover:text-gray-800 rounded flex items-center justify-center transition-colors">
+                                <i class="ph ph-list-dashes text-lg"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Grid -->
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6 bg-gray-50/50">
+                    <div id="results-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <!-- Cards will be injected here by JS -->
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="mt-8 flex items-center justify-between border-t border-gray-200 pt-6">
+                        <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                            <div>
+                                <p class="text-sm text-gray-700">
+                                    Mostrando <span class="font-medium">1</span> a <span class="font-medium">24</span> de <span class="font-medium">124</span> resultados
+                                </p>
+                            </div>
+                            <div>
+                                <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                                    <a href="#" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                                        <span class="sr-only">Anterior</span>
+                                        <i class="ph ph-caret-left"></i>
+                                    </a>
+                                    <a href="#" aria-current="page" class="z-10 bg-brand-50 border-brand-500 text-brand-600 relative inline-flex items-center px-4 py-2 border text-sm font-medium"> 1 </a>
+                                    <a href="#" class="bg-white border-gray-300 text-gray-500 hover:bg-gray-50 relative inline-flex items-center px-4 py-2 border text-sm font-medium"> 2 </a>
+                                    <a href="#" class="bg-white border-gray-300 text-gray-500 hover:bg-gray-50 relative inline-flex items-center px-4 py-2 border text-sm font-medium"> 3 </a>
+                                    <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700"> ... </span>
+                                    <a href="#" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                                        <span class="sr-only">Próximo</span>
+                                        <i class="ph ph-caret-right"></i>
+                                    </a>
+                                </nav>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- File Detail Modal (Hidden by default) -->
+    <div id="file-modal" class="fixed inset-0 z-[100] overflow-y-auto hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+        <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            
+            <!-- Background overlay -->
+            <div class="fixed inset-0 bg-gray-900/75 transition-opacity backdrop-blur-sm" aria-hidden="true" onclick="closeModal()"></div>
+
+            <!-- This element is to trick the browser into centering the modal contents. -->
+            <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+            <!-- Modal Panel -->
+            <div class="inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-3xl w-full">
+                
+                <!-- Modal Header -->
+                <div class="absolute top-0 right-0 pt-4 pr-4 z-10">
+                    <button type="button" onclick="closeModal()" class="bg-white/80 backdrop-blur rounded-full p-2 text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 shadow-sm transition-all hover:bg-gray-100">
+                        <span class="sr-only">Fechar</span>
+                        <i class="ph ph-x text-lg"></i>
+                    </button>
+                </div>
+
+                <!-- Modal Content Container -->
+                <div id="modal-content" class="flex flex-col h-full max-h-[85vh]">
+                    <!-- Injected by JS -->
+                </div>
+                
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        // Data Models
+        const fileTypes = {
+            video: [
+                { id: 'mp4', name: 'Video MP4', icon: 'ph-video-camera', color: 'text-purple-500', bg: 'bg-purple-100' },
+                { id: 'mov', name: 'QuickTime MOV', icon: 'ph-film-slate', color: 'text-purple-500', bg: 'bg-purple-100' },
+                { id: 'prproj', name: 'Premiere Pro', icon: 'ph-scissors', color: 'text-fuchsia-600', bg: 'bg-fuchsia-100' },
+                { id: 'aep', name: 'After Effects', icon: 'ph-magic-wand', color: 'text-indigo-600', bg: 'bg-indigo-100' },
+                { id: 'wav', name: 'Áudio WAV/SFX', icon: 'ph-wave-sine', color: 'text-pink-500', bg: 'bg-pink-100' }
+            ],
+            dev: [
+                { id: 'csv', name: 'Dataset CSV', icon: 'ph-table', color: 'text-emerald-600', bg: 'bg-emerald-100' },
+                { id: 'json', name: 'Data JSON', icon: 'ph-brackets-curly', color: 'text-amber-600', bg: 'bg-amber-100' },
+                { id: 'sql', name: 'Banco SQL', icon: 'ph-database', color: 'text-blue-600', bg: 'bg-blue-100' },
+                { id: 'py', name: 'Script Python', icon: 'ph-file-code', color: 'text-yellow-600', bg: 'bg-yellow-100' },
+                { id: 'ipynb', name: 'Jupyter Notebook', icon: 'ph-book-open', color: 'text-orange-500', bg: 'bg-orange-100' }
+            ],
+            design: [
+                { id: 'psd', name: 'Photoshop PSD', icon: 'ph-image', color: 'text-blue-500', bg: 'bg-blue-100' },
+                { id: 'ai', name: 'Illustrator AI', icon: 'ph-pen-nib', color: 'text-orange-500', bg: 'bg-orange-100' },
+                { id: 'fig', name: 'Figma Design', icon: 'ph-intersect', color: 'text-rose-500', bg: 'bg-rose-100' },
+                { id: 'svg', name: 'Vetor SVG', icon: 'ph-bezier-curve', color: 'text-teal-600', bg: 'bg-teal-100' },
+                { id: 'obj', name: 'Modelo 3D (OBJ)', icon: 'ph-cube', color: 'text-cyan-600', bg: 'bg-cyan-100' }
+            ]
+        };
+
+        const mockData = [
+            // Video Profile
+            { id: 1, title: 'Natureza 4K - Drone Footage', type: 'mp4', profile: 'video', size: '1.2 GB', author: 'CineOpen', date: '2 dias atrás', downloads: '1.2k', desc: 'Tomadas aéreas de florestas e montanhas em resolução 4K (3840x2160) a 60fps. Perfeito para B-roll.', image: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 2, title: 'Pack Transições Glitch', type: 'prproj', profile: 'video', size: '450 MB', author: 'EditPro', date: '1 semana atrás', downloads: '3.4k', desc: 'Projeto do Premiere Pro com 20 transições estilo glitch drag-and-drop. Não requer plugins.', image: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 3, title: 'Efeitos Sonoros Cinematográficos', type: 'wav', profile: 'video', size: '2.1 GB', author: 'AudioLib', date: '1 mês atrás', downloads: '8.9k', desc: 'Biblioteca com 500+ efeitos sonoros: impactos, risers, whooshes e ambientes em alta qualidade (24-bit/96kHz).', image: 'https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 4, title: 'Lower Thirds Animados', type: 'aep', profile: 'video', size: '120 MB', author: 'MotionGraphics', date: '3 dias atrás', downloads: '950', desc: 'Templates para After Effects de GC/Lower Thirds minimalistas e facilmente customizáveis.', image: 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&q=80&w=600&h=400' },
+            
+            // Dev/Data Profile
+            { id: 5, title: 'Censo Demográfico 2020 Completo', type: 'csv', profile: 'dev', size: '4.5 GB', author: 'GovData', date: 'Ano passado', downloads: '12k', desc: 'Dataset completo do censo com dados socioeconômicos limpos e categorizados.', isCode: true },
+            { id: 6, title: 'API Respostas E-commerce', type: 'json', profile: 'dev', size: '15 MB', author: 'MockAPI', date: '5 dias atrás', downloads: '2.1k', desc: 'Mocks de respostas JSON de uma API RESTful de e-commerce completa para testes de frontend.', isCode: true },
+            { id: 7, title: 'Modelo Previsão de Churn', type: 'ipynb', profile: 'dev', size: '5 MB', author: 'DataSci_BR', date: '2 semanas atrás', downloads: '450', desc: 'Notebook Jupyter com análise exploratória e modelo de Machine Learning usando XGBoost para prever churn de clientes.', isCode: true },
+            { id: 8, title: 'Dump Banco de Dados WordPress', type: 'sql', profile: 'dev', size: '250 MB', author: 'WPDummy', date: '1 mês atrás', downloads: '1.8k', desc: 'Estrutura completa e dados fictícios de um banco MySQL do WordPress para testes locais.', isCode: true },
+            { id: 9, title: 'Script Scraper Amazon', type: 'py', profile: 'dev', size: '12 KB', author: 'PyCoder', date: 'Ontem', downloads: '340', desc: 'Script Python usando BeautifulSoup e Selenium para extrair dados de produtos (uso educacional).', isCode: true },
+
+            // Design Profile
+            { id: 10, title: 'UI Kit Dashboard SaaS', type: 'fig', profile: 'design', size: '45 MB', author: 'UI_Ninja', date: '1 semana atrás', downloads: '5.6k', desc: 'UI Kit completo no Figma com mais de 50 componentes, variantes e auto-layout configurado.', image: 'https://images.unsplash.com/photo-1618761714954-0b8cd0026356?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 11, title: 'Pack Ícones Linha Fina', type: 'svg', profile: 'design', size: '2 MB', author: 'IconCraft', date: '2 meses atrás', downloads: '15k', desc: 'Coleção com 400+ ícones em formato SVG, otimizados para web e totalmente editáveis.', image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 12, title: 'Mockup Smartphone 3D', type: 'psd', profile: 'design', size: '320 MB', author: 'MockupWorld', date: '4 dias atrás', downloads: '2.2k', desc: 'Arquivo PSD em alta resolução com Smart Objects para aplicar suas telas em um smartphone realista.', image: 'https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?auto=format&fit=crop&q=80&w=600&h=400' },
+            { id: 13, title: 'Cadeira Eames - Modelo 3D', type: 'obj', profile: 'design', size: '85 MB', author: 'ArchVis', date: '3 semanas atrás', downloads: '890', desc: 'Modelo 3D detalhado no formato .obj e .mtl, com texturas PBR inclusas.', image: 'https://images.unsplash.com/photo-1505843490538-5133c6c7d0e1?auto=format&fit=crop&q=80&w=600&h=400' }
+        ];
+
+        // Helper to get type info
+        function getTypeInfo(typeId) {
+            for (const category in fileTypes) {
+                const found = fileTypes[category].find(t => t.id === typeId);
+                if (found) return found;
+            }
+            return { name: 'Arquivo', icon: 'ph-file', color: 'text-gray-500', bg: 'bg-gray-100' };
+        }
+
+        function renderFilters(profile) {
+            const container = document.getElementById('file-type-filters');
+            container.innerHTML = '';
+            
+            let typesToRender = [];
+            if (profile === 'all') {
+                typesToRender = [...fileTypes.video, ...fileTypes.dev, ...fileTypes.design];
+            } else {
+                typesToRender = fileTypes[profile];
+            }
+
+            typesToRender.forEach(type => {
+                const html = `
+                    <label class="flex items-center gap-3 group cursor-pointer">
+                        <input type="checkbox" checked class="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded">
+                        <div class="flex items-center gap-2 text-sm text-gray-700 group-hover:text-gray-900">
+                            <span class="flex items-center justify-center w-6 h-6 rounded ${type.bg} ${type.color}">
+                                <i class="ph ${type.icon}"></i>
+                            </span>
+                            ${type.name}
+                        </div>
+                    </label>
+                `;
+                container.insertAdjacentHTML('beforeend', html);
+            });
+        }
+
+        function renderGrid(profile) {
+            const container = document.getElementById('results-grid');
+            container.innerHTML = '';
+            
+            let dataToRender = mockData;
+            if (profile !== 'all') {
+                dataToRender = mockData.filter(item => item.profile === profile);
+            }
+
+            document.getElementById('results-count').innerText = `Mostrando ${dataToRender.length} resultados`;
+
+            dataToRender.forEach((item, index) => {
+                const typeInfo = getTypeInfo(item.type);
+                const delay = index * 50; // Staggered animation
+                
+                // Content representation (Image vs Code block)
+                let previewHtml = '';
+                if (item.isCode) {
+                    previewHtml = `
+                        <div class="absolute inset-0 bg-slate-800 p-4 font-mono text-xs overflow-hidden flex flex-col">
+                            <div class="flex gap-1.5 mb-3">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500"></div>
+                            </div>
+                            <div class="text-green-400 opacity-80 flex-1 overflow-hidden">
+                                // ${item.title}<br>
+                                data = load('${item.type}')<br>
+                                <span class="text-blue-300">function</span> process(data) {<br>
+                                &nbsp;&nbsp;<span class="text-pink-300">return</span> data.map(i => i.val);<br>
+                                }<br>
+                                ...
+                            </div>
+                        </div>
+                    `;
+                } else if (item.image) {
+                    previewHtml = `<img src="${item.image}" alt="${item.title}" class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">`;
+                } else {
+                    previewHtml = `
+                        <div class="absolute inset-0 bg-gray-100 flex items-center justify-center group-hover:bg-gray-200 transition-colors">
+                            <i class="ph ${typeInfo.icon} text-6xl text-gray-300"></i>
+                        </div>
+                    `;
+                }
+
+                const html = `
+                    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col group fade-in cursor-pointer" style="animation-delay: ${delay}ms; animation-fill-mode: both;" onclick="openModal(${item.id})">
+                        <!-- Card Header / Preview -->
+                        <div class="h-40 w-full relative bg-gray-100 overflow-hidden border-b border-gray-100">
+                            ${previewHtml}
+                            
+                            <!-- Overlay actions -->
+                            <div class="absolute inset-0 bg-gray-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 backdrop-blur-[2px]">
+                                <button class="bg-white text-gray-900 rounded-full p-2.5 shadow-lg transform translate-y-4 group-hover:translate-y-0 transition-all hover:bg-brand-50 hover:text-brand-600" title="Visualizar">
+                                    <i class="ph ph-eye text-lg"></i>
+                                </button>
+                                <button class="bg-brand-600 text-white rounded-full p-2.5 shadow-lg transform translate-y-4 group-hover:translate-y-0 transition-all delay-75 hover:bg-brand-500" title="Baixar Rápido">
+                                    <i class="ph ph-download-simple text-lg"></i>
+                                </button>
+                            </div>
+                            
+                            <!-- Badges -->
+                            <div class="absolute top-2 left-2 flex gap-2">
+                                <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-white/90 shadow-sm text-gray-700 backdrop-blur-sm">
+                                    <span class="w-2 h-2 rounded-full ${typeInfo.color.replace('text-', 'bg-')}"></span>
+                                    .${item.type}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Card Body -->
+                        <div class="p-4 flex-1 flex flex-col">
+                            <h3 class="text-sm font-semibold text-gray-900 line-clamp-2 leading-tight mb-1 group-hover:text-brand-600 transition-colors">${item.title}</h3>
+                            <p class="text-xs text-gray-500 line-clamp-2 flex-1 mt-1">${item.desc}</p>
+                            
+                            <!-- Meta Footer -->
+                            <div class="mt-4 flex items-center justify-between text-xs text-gray-500 border-t border-gray-100 pt-3">
+                                <div class="flex items-center gap-1.5">
+                                    <i class="ph ph-hard-drives text-gray-400"></i>
+                                    ${item.size}
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <i class="ph ph-download-simple text-gray-400"></i>
+                                    ${item.downloads}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', html);
+            });
+        }
+
+        function setProfile(profile) {
+            // Update buttons styling
+            const buttons = document.querySelectorAll('aside button');
+            buttons.forEach(btn => {
+                btn.className = "w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-brand-50 hover:text-brand-700 transition-colors group";
+                btn.querySelector('i').className = btn.querySelector('i').className.replace('text-brand-500', 'text-gray-400');
+            });
+
+            // Set active button
+            let activeBtn;
+            if (profile === 'all') activeBtn = document.getElementById('btn-profile-all');
+            else activeBtn = document.querySelector(`aside button[onclick="setProfile('${profile}')"]`);
+            
+            if(activeBtn) {
+                activeBtn.className = "w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg bg-brand-50 text-brand-700 transition-colors shadow-sm ring-1 ring-brand-100";
+                activeBtn.querySelector('i').className = activeBtn.querySelector('i').className.replace('text-gray-400', 'text-brand-600').replace('text-gray-500', 'text-brand-600');
+            }
+
+            // Update Label
+            const labels = {
+                'video': 'Editor de Vídeo',
+                'dev': 'Programador / Data',
+                'design': 'Designer',
+                'all': 'Todos'
+            };
+            document.getElementById('active-profile-label').innerText = labels[profile];
+
+            // Re-render
+            renderFilters(profile);
+            renderGrid(profile);
+        }
+
+        function openModal(id) {
+            const item = mockData.find(i => i.id === id);
+            if (!item) return;
+
+            const typeInfo = getTypeInfo(item.type);
+            const modal = document.getElementById('file-modal');
+            const content = document.getElementById('modal-content');
+
+            // Generate content based on type
+            let visualArea = '';
+            if (item.isCode) {
+                visualArea = `
+                    <div class="w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-sm p-6 overflow-y-auto" style="height: 300px;">
+                        <div class="mb-4 text-gray-500">/* Pré-visualização do conteúdo de ${item.title} */</div>
+                        <div class="text-blue-400">import</div> pandas <div class="text-blue-400">as</div> pd<br><br>
+                        <div class="text-green-500"># Carregando o dataset</div><br>
+                        df = pd.read_${item.type}('<span class="text-orange-300">dataset.${item.type}</span>')<br><br>
+                        <div class="text-green-500"># Visualizando as primeiras linhas</div><br>
+                        <span class="text-yellow-200">print</span>(df.head())<br><br>
+                        >    id | nome       | valor | status<br>
+                        >    1  | Item Alpha | 100.5 | Ativo<br>
+                        >    2  | Item Beta  | 45.0  | Inativo<br>
+                        ...
+                    </div>
+                `;
+            } else if (item.image) {
+                visualArea = `
+                    <div class="w-full bg-gray-100 relative group flex items-center justify-center overflow-hidden" style="height: 300px;">
+                        <img src="${item.image}" class="w-full h-full object-cover">
+                        ${item.profile === 'video' ? '<div class="absolute inset-0 flex items-center justify-center bg-black/20"><button class="w-16 h-16 bg-white/90 rounded-full flex items-center justify-center text-gray-900 shadow-lg hover:scale-110 transition-transform"><i class="ph-fill ph-play text-2xl ml-1"></i></button></div>' : ''}
+                    </div>
+                `;
+            }
+
+            content.innerHTML = `
+                <!-- Media/Preview Area -->
+                ${visualArea}
+
+                <!-- Content Area -->
+                <div class="p-6 sm:p-8 flex-1 overflow-y-auto bg-white">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold ${typeInfo.bg} ${typeInfo.color}">
+                                    <i class="ph ${typeInfo.icon} text-sm"></i>
+                                    Formato .${item.type.toUpperCase()}
+                                </span>
+                                <span class="text-xs text-gray-500 bg-gray-100 px-2.5 py-1 rounded-md font-medium">CC0 Domínio Público</span>
+                            </div>
+                            <h2 class="text-2xl font-bold text-gray-900 mb-2">${item.title}</h2>
+                            <p class="text-gray-600 text-sm leading-relaxed">${item.desc}</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-8 py-4 border-y border-gray-100">
+                        <div>
+                            <p class="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Tamanho</p>
+                            <p class="text-sm font-medium text-gray-900 flex items-center gap-1"><i class="ph ph-hard-drives text-gray-400"></i> ${item.size}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Downloads</p>
+                            <p class="text-sm font-medium text-gray-900 flex items-center gap-1"><i class="ph ph-download-simple text-gray-400"></i> ${item.downloads}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Data</p>
+                            <p class="text-sm font-medium text-gray-900 flex items-center gap-1"><i class="ph ph-calendar-blank text-gray-400"></i> ${item.date}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Autor</p>
+                            <p class="text-sm font-medium text-gray-900 flex items-center gap-1"><i class="ph ph-user text-gray-400"></i> ${item.author}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer Actions -->
+                <div class="bg-gray-50 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-gray-200">
+                    <button class="text-gray-500 hover:text-gray-700 text-sm font-medium flex items-center gap-2 transition-colors">
+                        <i class="ph ph-flag text-lg"></i> Reportar problema
+                    </button>
+                    <div class="flex gap-3 w-full sm:w-auto">
+                        <button class="flex-1 sm:flex-none px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 transition-colors shadow-sm flex items-center justify-center gap-2">
+                            <i class="ph ph-bookmark-simple text-lg"></i> Salvar
+                        </button>
+                        <button onclick="downloadAlert()" class="flex-1 sm:flex-none px-6 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 transition-colors shadow-sm flex items-center justify-center gap-2">
+                            <i class="ph ph-download-simple text-lg"></i> Baixar Arquivo
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            modal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden'; // Prevent background scrolling
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('file-modal');
+            modal.classList.add('hidden');
+            document.body.style.overflow = 'auto'; // Restore background scrolling
+        }
+
+        function downloadAlert() {
+            // Custom modern "alert" using DOM instead of browser alert()
+            const btn = event.currentTarget;
+            const originalHTML = btn.innerHTML;
+            const originalClasses = btn.className;
+            
+            btn.className = "flex-1 sm:flex-none px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium focus:outline-none transition-colors shadow-sm flex items-center justify-center gap-2";
+            btn.innerHTML = '<i class="ph ph-check-circle text-lg"></i> Iniciando...';
+            
+            setTimeout(() => {
+                btn.className = originalClasses;
+                btn.innerHTML = originalHTML;
+                closeModal();
+            }, 1500);
+        }
+
+        // Initialize on load
+        window.onload = () => {
+            setProfile('all');
+            
+            // Close modal on Escape key
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeModal();
+            });
+        };
+    </script>
+</body>
+</html>
