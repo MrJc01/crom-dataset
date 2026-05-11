@@ -599,6 +599,34 @@ func SetupRouter() http.Handler {
 	adminMux.HandleFunc("/api/admin/tokens", createTokenHandler)
 	mux.Handle("/api/admin/tokens", AdminAuthMiddleware(adminMux))
 
+	// Servir frontend estático (produção/Docker)
+	// Em desenvolvimento, o Vite dev server faz proxy de /api para o Go
+	if _, err := os.Stat("./static/index.html"); err == nil {
+		log.Println("[FRONTEND] Servindo frontend estático de ./static/")
+		fs := http.FileServer(http.Dir("./static"))
+
+		// SPA fallback: qualquer rota não-/api serve o index.html
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// Se for /api, não intercepta
+			if strings.HasPrefix(r.URL.Path, "/api") {
+				http.NotFound(w, r)
+				return
+			}
+
+			// Tenta servir o arquivo estático (CSS, JS, imagens, etc.)
+			path := "./static" + r.URL.Path
+			if _, err := os.Stat(path); err == nil {
+				fs.ServeHTTP(w, r)
+				return
+			}
+
+			// SPA: qualquer outra rota → index.html (React Router resolve)
+			http.ServeFile(w, r, "./static/index.html")
+		})
+	} else {
+		log.Println("[FRONTEND] ./static/ não encontrado — rodando apenas API (use Vite dev server para o frontend)")
+	}
+
 	return CORSMiddleware(mux)
 }
 
@@ -607,7 +635,15 @@ func main() {
 		log.Println("Aviso: arquivo .env não encontrado, usando variáveis de ambiente do sistema.")
 	}
 
-	database.InitDB("")
+	// DB_PATH para Docker (/app/data/dataset.db) ou local (./dataset.db)
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		// Auto-detecta: se /app/data existe (Docker), usa lá
+		if info, err := os.Stat("/app/data"); err == nil && info.IsDir() {
+			dbPath = "/app/data/dataset.db"
+		}
+	}
+	database.InitDB(dbPath)
 
 	handler := SetupRouter()
 
@@ -616,7 +652,7 @@ func main() {
 		port = "8080"
 	}
 
-	fmt.Printf("Servidor rodando na porta %s\n", port)
+	fmt.Printf("🚀 CROM Dataset rodando na porta %s\n", port)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatal(err)
 	}

@@ -1,0 +1,14 @@
+.git
+.gitignore
+*.md
+logs/
+temp
+.backend_pid
+.frontend_pid
+frontend/node_modules
+frontend/dist
+backend/backend_app
+backend/crom-dataset
+backend/dataset.db
+backend/uploads/
+backend/.env

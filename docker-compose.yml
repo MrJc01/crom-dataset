@@ -1,0 +1,27 @@
+# ══════════════════════════════════════════════════════════════
+# CROM Dataset — Docker Compose
+# Deploy rápido: docker compose up -d
+# Porta e variáveis lidas do backend/.env
+# ══════════════════════════════════════════════════════════════
+
+services:
+  crom-dataset:
+    build: .
+    container_name: crom-dataset
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - crom-data:/app/data
+    env_file:
+      - ./backend/.env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-8080}/api/stats"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  crom-data:
+    driver: local
