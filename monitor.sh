@@ -1,7 +1,8 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# monitor.sh — CROM Dataset Orchestrator v2.0
+# monitor.sh — CROM Dataset Orchestrator v2.1
 # Dashboard de controle para serviços Backend (Go) e Frontend (Vite)
+# Arquitetura "Casca" — Zero Storage Local
 # ═══════════════════════════════════════════════════════════════
 
 set -uo pipefail
@@ -385,6 +386,32 @@ diagnostics() {
     du -sh "$DIR/backend/dataset.db" 2>/dev/null | awk '{print "  Banco: " $1}'
     du -sh "$DIR/logs/" 2>/dev/null | awk '{print "  Logs:  " $1}'
     du -sh "$DIR/frontend/node_modules/" 2>/dev/null | awk '{print "  node_modules: " $1}'
+    
+    # [CASCA] Alerta se uploads locais ainda existirem
+    if [ -d "$DIR/backend/uploads" ] && [ "$(ls -A $DIR/backend/uploads 2>/dev/null)" ]; then
+        echo -e "  ${R}⚠ UPLOADS LOCAIS DETECTADOS! Devem ser migrados para provedor externo.${N}"
+        du -sh "$DIR/backend/uploads/" 2>/dev/null | awk '{print "  Uploads: " $1 " (REMOVER)"}'
+    fi
+    echo ""
+    
+    # Provedores de Storage configurados
+    echo -e "${W}Provedores de Storage:${N}"
+    local env_file="$DIR/backend/.env"
+    if [ -f "$env_file" ]; then
+        hf_token=$(grep -E '^HF_TOKEN=' "$env_file" | cut -d '=' -f2)
+        ia_key=$(grep -E '^IA_ACCESS_KEY=' "$env_file" | cut -d '=' -f2)
+        if [ -n "$hf_token" ] && [ "$hf_token" != "hf_seu_token_hugging_face_aqui" ]; then
+            echo -e "  ${G}✓${N} HuggingFace: Configurado"
+        else
+            echo -e "  ${Y}○${N} HuggingFace: Não configurado"
+        fi
+        if [ -n "$ia_key" ]; then
+            echo -e "  ${G}✓${N} Internet Archive: Configurado"
+        else
+            echo -e "  ${Y}○${N} Internet Archive: Não configurado"
+        fi
+        echo -e "  ${G}✓${N} Catbox.moe: Sempre disponível (anônimo)"
+    fi
     echo ""
     
     # Contagem de registros

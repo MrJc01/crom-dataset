@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -266,60 +264,8 @@ func getItemsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(items)
 }
 
-func uploadToHuggingFace(filePath string, filename string) (string, error) {
-	hfToken := os.Getenv("HF_TOKEN")
-	hfRepo := os.Getenv("HF_DEFAULT_REPO")
-
-	if hfToken == "" || hfRepo == "" {
-		return "", fmt.Errorf("hugging face credentials not configured")
-	}
-
-	fileBytes, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	
-	encodedContent := base64.StdEncoding.EncodeToString(fileBytes)
-
-	payload := map[string]interface{}{
-		"operations": []map[string]interface{}{
-			{
-				"operation": "addOrUpdate",
-				"path":      filename,
-				"content":   encodedContent,
-				"encoding":  "base64",
-			},
-		},
-		"commit_message": "Upload via CROM Dataset",
-		"summary":        "Upload via CROM Dataset",
-	}
-
-	payloadBytes, _ := json.Marshal(payload)
-
-	url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/commit/main", hfRepo)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+hfToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != 200 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("HF API error: %d %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	downloadUrl := fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%s?download=true", hfRepo, filename)
-	return downloadUrl, nil
-}
+// uploadToHuggingFace foi removida — toda lógica de upload agora vive em storage.go
+// O CROM Dataset é uma "casca" que não salva nada localmente.
 
 func createItemHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -334,9 +280,9 @@ func createItemHandler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.Contains(contentType, "multipart/form-data") {
 		// Handler amigável para envio de arquivos/links pelo Frontend
-		err := r.ParseMultipartForm(100 << 20) // 100MB Max
+		err := r.ParseMultipartForm(50 << 20) // 50MB Max (arquivos ficam em RAM, sem disco)
 		if err != nil {
-			http.Error(w, "Falha ao ler multipart form", http.StatusBadRequest)
+			http.Error(w, "Falha ao ler multipart form (limite: 50MB)", http.StatusBadRequest)
 			return
 		}
 
@@ -358,30 +304,40 @@ func createItemHandler(w http.ResponseWriter, r *http.Request) {
 		profile := r.FormValue("profile")
 		fileUrl := r.FormValue("url")
 
-		// Processar Arquivo se existir
+		// ── Arquitetura Casca: upload direto para provedor externo (ZERO disco local) ──
 		file, handler, err := r.FormFile("file")
 		if err == nil {
 			defer file.Close()
-			os.MkdirAll("uploads", os.ModePerm)
-			filePath := "uploads/" + fmt.Sprintf("%d_", time.Now().Unix()) + handler.Filename
-			f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0666)
-			if err == nil {
-				io.Copy(f, file)
-				f.Close()
-				
-				if item.Provider == "HuggingFace" {
-					hfUrl, hfErr := uploadToHuggingFace(filePath, handler.Filename)
-					if hfErr == nil {
-						fileUrl = hfUrl
-						os.Remove(filePath) // Remove local para economizar disco
-					} else {
-						log.Println("Erro HF Upload:", hfErr)
-						fileUrl = "/api/" + filePath
-					}
-				} else {
-					fileUrl = "/api/" + filePath
-				}
+
+			// Lê o arquivo inteiramente em memória (sem tocar no disco)
+			fileBytes, readErr := io.ReadAll(file)
+			if readErr != nil {
+				http.Error(w, "Falha ao ler arquivo enviado", http.StatusBadRequest)
+				return
 			}
+
+			// Determina o provedor de destino
+			providerName := item.Provider
+			if providerName == "" {
+				providerName = "HuggingFace" // Padrão
+			}
+
+			// Obtém o provider e envia direto (sem fallback local)
+			provider, provErr := GetStorageProvider(providerName)
+			if provErr != nil {
+				http.Error(w, "Provedor indisponível: "+provErr.Error(), http.StatusBadGateway)
+				return
+			}
+
+			uploadedURL, uploadErr := provider.Upload(fileBytes, handler.Filename)
+			if uploadErr != nil {
+				log.Printf("[STORAGE] Erro no upload via %s: %v", providerName, uploadErr)
+				http.Error(w, fmt.Sprintf("Falha no upload para %s: %s", providerName, uploadErr.Error()), http.StatusBadGateway)
+				return
+			}
+
+			log.Printf("[STORAGE] Upload OK via %s → %s", providerName, uploadedURL)
+			fileUrl = uploadedURL
 		}
 
 		metadataMap := map[string]string{
@@ -497,8 +453,17 @@ func createTokenHandler(w http.ResponseWriter, r *http.Request) {
 func SetupRouter() http.Handler {
 	mux := http.NewServeMux()
 	
-	// Expor arquivos estáticos (Uploads locais)
-	mux.Handle("/api/uploads/", http.StripPrefix("/api/uploads/", http.FileServer(http.Dir("./uploads"))))
+	// [CASCA] Não há FileServer de uploads locais — tudo vive nos provedores externos
+
+	// Endpoint público: lista provedores de upload suportados
+	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"file_upload_providers": SupportedFileProviders,
+			"note":                 "Para 'Link Externo', informe a URL diretamente sem upload de arquivo.",
+		})
+	})
 	
 	// Rotas protegidas por Token de Usuário
 	userMux := http.NewServeMux()

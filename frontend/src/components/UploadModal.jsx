@@ -11,20 +11,34 @@ function UploadModal({ onClose, onUploadSuccess }) {
   const [url, setUrl] = useState('');
   const [file, setFile] = useState(null);
   const [licenses, setLicenses] = useState([]);
+  const [fileProviders, setFileProviders] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [uploadProgress, setUploadProgress] = useState('');
 
   useEffect(() => {
     fetch('/api/licenses', { headers: { 'X-API-Key': 'default-read-token' } })
       .then(res => res.json())
       .then(data => { setLicenses(data); if (data.length > 0) setLicenseId(data[0].id); })
       .catch(err => console.error("Erro ao carregar licenças", err));
+
+    // Carrega provedores de upload suportados
+    fetch('/api/providers')
+      .then(res => res.json())
+      .then(data => {
+        setFileProviders(data.file_upload_providers || []);
+        if (data.file_upload_providers?.length > 0) {
+          setProvider(data.file_upload_providers[0]);
+        }
+      })
+      .catch(err => console.error("Erro ao carregar provedores", err));
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError('');
+    setUploadProgress('');
     const token = localStorage.getItem('crom_token');
     if (!token) { setError('Nenhum token configurado.'); setIsSubmitting(false); return; }
 
@@ -33,19 +47,42 @@ function UploadModal({ onClose, onUploadSuccess }) {
     formData.append('description', description);
     formData.append('category', category);
     formData.append('license_id', licenseId);
-    formData.append('provider', activeTab === 'file' ? 'HuggingFace' : provider);
     formData.append('profile', profile);
-    if (activeTab === 'link') { formData.append('url', url); }
-    else if (activeTab === 'file' && file) { formData.append('file', file); }
-    else { setError('Anexe um arquivo.'); setIsSubmitting(false); return; }
+
+    if (activeTab === 'link') {
+      formData.append('provider', provider || 'Link Externo');
+      formData.append('url', url);
+    } else if (activeTab === 'file' && file) {
+      formData.append('provider', provider);
+      formData.append('file', file);
+      setUploadProgress(`Enviando para ${provider}...`);
+    } else {
+      setError('Anexe um arquivo.');
+      setIsSubmitting(false);
+      return;
+    }
 
     try {
       const res = await fetch('/api/items', { method: 'POST', headers: { 'X-API-Key': token }, body: formData });
-      if (!res.ok) { const text = await res.text(); throw new Error(text || 'Falha no servidor'); }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || 'Falha no servidor');
+      }
+      setUploadProgress('');
       onUploadSuccess();
       onClose();
-    } catch (err) { setError(err.message); }
-    finally { setIsSubmitting(false); }
+    } catch (err) {
+      setError(err.message);
+      setUploadProgress('');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const providerLabels = {
+    'HuggingFace': { icon: '🤗', desc: 'Repositório HF (gratuito, ilimitado)' },
+    'InternetArchive': { icon: '🏛️', desc: 'Internet Archive (gratuito, permanente)' },
+    'Catbox': { icon: '📦', desc: 'Catbox.moe (gratuito, anônimo, 200MB)' },
   };
 
   const inputClass = "input-dark w-full text-sm";
@@ -73,6 +110,13 @@ function UploadModal({ onClose, onUploadSuccess }) {
               <div className="mb-4 bg-red-500/10 border border-red-500/20 p-3 rounded-lg flex items-start gap-2">
                 <i className="ph ph-warning-circle text-red-400 text-lg flex-shrink-0 mt-0.5"></i>
                 <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
+            {uploadProgress && (
+              <div className="mb-4 bg-crom-accent/10 border border-crom-accent/20 p-3 rounded-lg flex items-center gap-2">
+                <i className="ph ph-spinner animate-spin text-crom-accent-light text-lg"></i>
+                <p className="text-sm text-crom-accent-light">{uploadProgress}</p>
               </div>
             )}
 
@@ -115,7 +159,7 @@ function UploadModal({ onClose, onUploadSuccess }) {
                     <button key={tab} type="button" onClick={() => setActiveTab(tab)}
                       className={`py-2 px-4 text-sm font-medium border-b-2 transition-colors ${activeTab === tab ? 'border-crom-accent text-crom-accent-light' : 'border-transparent text-crom-text-dim hover:text-crom-text'}`}>
                       <i className={`ph ${tab === 'link' ? 'ph-link' : 'ph-file-arrow-up'} mr-1`}></i>
-                      {tab === 'link' ? 'Link Externo' : 'Upload'}
+                      {tab === 'link' ? 'Link Externo' : 'Upload de Arquivo'}
                     </button>
                   ))}
                 </div>
@@ -124,7 +168,7 @@ function UploadModal({ onClose, onUploadSuccess }) {
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                       <label className={labelClass}>Provedor</label>
-                      <input type="text" value={provider} onChange={(e) => setProvider(e.target.value)} className={inputClass} placeholder="Ex: HuggingFace" />
+                      <input type="text" value={provider} onChange={(e) => setProvider(e.target.value)} className={inputClass} placeholder="Ex: HuggingFace, GitHub" />
                     </div>
                     <div>
                       <label className={labelClass}>URL</label>
@@ -134,11 +178,45 @@ function UploadModal({ onClose, onUploadSuccess }) {
                 )}
 
                 {activeTab === 'file' && (
-                  <div>
-                    <label className={labelClass}>Arquivo</label>
-                    <input type="file" onChange={(e) => setFile(e.target.files[0])}
-                      className="block w-full text-sm text-crom-text-dim file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-crom-accent/15 file:text-crom-accent-light hover:file:bg-crom-accent/25 transition-colors cursor-pointer" />
-                    <p className="mt-1 text-xs text-crom-text-dim">Upload seguro via Hugging Face.</p>
+                  <div className="space-y-4">
+                    {/* Seletor de Provedor de Storage */}
+                    <div>
+                      <label className={labelClass}>Destino do Upload</label>
+                      <div className="grid grid-cols-1 gap-2">
+                        {fileProviders.map(fp => {
+                          const info = providerLabels[fp] || { icon: '☁️', desc: fp };
+                          return (
+                            <label key={fp}
+                              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${provider === fp
+                                ? 'border-crom-accent/50 bg-crom-accent/10 ring-1 ring-crom-accent/30'
+                                : 'border-crom-border bg-crom-surface-2 hover:bg-crom-surface-3'
+                              }`}
+                            >
+                              <input type="radio" name="file_provider" value={fp}
+                                checked={provider === fp} onChange={() => setProvider(fp)}
+                                className="sr-only" />
+                              <span className="text-xl">{info.icon}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-semibold text-crom-text">{fp}</div>
+                                <div className="text-xs text-crom-text-dim">{info.desc}</div>
+                              </div>
+                              {provider === fp && (
+                                <i className="ph ph-check-circle text-crom-accent-light text-lg"></i>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className={labelClass}>Arquivo (máx 50MB)</label>
+                      <input type="file" onChange={(e) => setFile(e.target.files[0])}
+                        className="block w-full text-sm text-crom-text-dim file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-crom-accent/15 file:text-crom-accent-light hover:file:bg-crom-accent/25 transition-colors cursor-pointer" />
+                      <p className="mt-1 text-xs text-crom-text-dim">
+                        O arquivo será enviado diretamente para <strong className="text-crom-accent-light">{provider || 'o provedor'}</strong> — nada fica armazenado localmente.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

@@ -5,6 +5,7 @@ node_modules/
 
 # Binários e Build
 /backend/backend_app
+/backend/crom-dataset
 /frontend/dist/
 /frontend/build/
 *.exe
@@ -12,6 +13,11 @@ node_modules/
 *.dll
 *.so
 *.dylib
+
+# [CASCA] Uploads locais NÃO devem existir — tudo vive nos provedores externos
+/backend/uploads/
+/backups/
+temp
 
 # Banco de Dados
 *.db
