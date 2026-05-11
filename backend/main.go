@@ -70,6 +70,10 @@ func TokenAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		token := r.Header.Get("X-API-Key")
+		// Fallback: aceita token via query param para endpoints de download (window.open não envia headers)
+		if token == "" {
+			token = r.URL.Query().Get("_token")
+		}
 		if token == "" {
 			http.Error(w, "Acesso Negado: Token não fornecido", http.StatusUnauthorized)
 			return
@@ -185,6 +189,49 @@ func getSingleItemHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(item)
+}
+
+// downloadItemHandler redireciona o usuário para a URL real do provedor.
+// A URL do provedor NUNCA é exposta no HTML do frontend — o download
+// sempre passa por /api/download/{id}, e o backend faz 302 redirect.
+// Isso evita vazamento de referências externas.
+func downloadItemHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	idStr := strings.TrimPrefix(r.URL.Path, "/api/download/")
+	if idStr == "" {
+		http.Error(w, "ID ausente", http.StatusBadRequest)
+		return
+	}
+
+	var metadataStr string
+	err := database.DB.QueryRow("SELECT provider_metadata FROM items WHERE id = ?", idStr).Scan(&metadataStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Dataset não encontrado", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(metadataStr), &metadata); err != nil {
+		http.Error(w, "Metadata inválida", http.StatusInternalServerError)
+		return
+	}
+
+	downloadURL := metadata["url"]
+	if downloadURL == "" {
+		http.Error(w, "URL de download não disponível para este dataset", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("[DOWNLOAD] Item %s → redirect para %s", idStr, downloadURL)
+	http.Redirect(w, r, downloadURL, http.StatusFound)
 }
 
 func getItemsHandler(w http.ResponseWriter, r *http.Request) {
@@ -490,6 +537,12 @@ func SetupRouter() http.Handler {
 	mux.Handle("/api/items", TokenAuthMiddleware(userMux))
 	mux.Handle("/api/items/", TokenAuthMiddleware(userMux))
 	mux.Handle("/api/licenses", TokenAuthMiddleware(userMux))
+
+	// Download é público — não precisa de token
+	mux.HandleFunc("/api/download/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		downloadItemHandler(w, r)
+	})
 
 	// Rota pública de estatísticas (sem autenticação)
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {

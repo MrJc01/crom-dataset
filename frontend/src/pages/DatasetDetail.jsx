@@ -51,7 +51,9 @@ function DatasetDetail() {
   }
 
   const metadata = item.provider_metadata && typeof item.provider_metadata === 'object' ? item.provider_metadata : {};
-  const downloadUrl = metadata.url || '#';
+  // [CASCA] Download passa pela API do CROM — URL do provedor nunca é exposta no HTML
+  const hasDownload = !!metadata.url;
+  const downloadApiUrl = `/api/download/${item.id}`;
   const licenseName = item.license_name || 'Não especificada';
   const createdDate = item.created_at ? new Date(item.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
 
@@ -122,16 +124,23 @@ function DatasetDetail() {
 
           {/* CTA */}
           <div className="opacity-0 animate-slide-up animate-delay-300">
-            <a 
-              href={downloadUrl} 
-              target="_blank" 
-              rel="noreferrer"
-              className="w-full btn-primary text-center py-4 text-base font-semibold rounded-xl flex items-center justify-center gap-3 animate-pulse-glow"
-              id="btn-download-dataset"
-            >
-              <i className="ph ph-download-simple text-xl"></i>
-              {downloadUrl !== '#' ? 'Baixar / Acessar Dataset' : 'Link Indisponível'}
-            </a>
+            {hasDownload ? (
+              <a 
+                href={downloadApiUrl}
+                target="_blank" 
+                rel="noreferrer"
+                className="w-full btn-primary text-center py-4 text-base font-semibold rounded-xl flex items-center justify-center gap-3 animate-pulse-glow"
+                id="btn-download-dataset"
+              >
+                <i className="ph ph-download-simple text-xl"></i>
+                Baixar / Acessar Dataset
+              </a>
+            ) : (
+              <div className="w-full text-center py-4 text-base font-semibold rounded-xl flex items-center justify-center gap-3 bg-crom-surface-3 text-crom-text-dim border border-crom-border cursor-not-allowed">
+                <i className="ph ph-prohibit text-xl"></i>
+                Link Indisponível
+              </div>
+            )}
           </div>
         </div>
 
