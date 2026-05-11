@@ -2,6 +2,8 @@
 
 Uma plataforma descentralizada e open-source para indexação de arquivos, datasets, vídeos, imagens e códigos. O CROM Dataset é uma **casca** — não armazena binários localmente. Todos os dados vivem em provedores externos gratuitos.
 
+🌐 **Produção:** [dados.crom.run](https://dados.crom.run) | [dataset.crom.run](https://dataset.crom.run)
+
 ## Arquitetura Casca (Zero Storage Local)
 
 O CROM Dataset atua como um **indexador de metadados**:
@@ -23,41 +25,75 @@ Usuário → [Upload] → Backend (RAM) → Provedor Externo → URL salva no SQ
 | **Catbox.moe** | Grátis | 200MB/arquivo | Nenhuma (anônimo) |
 | **Link Externo** | — | — | — (URL direta) |
 
+### Download Proxy
+
+Downloads passam pela API do CROM (`/api/download/{id}`) — a URL real do provedor nunca é exposta no frontend. O backend faz proxy com `Content-Disposition: attachment`.
+
 ## Stack Técnica
 
-- **Backend (Go + SQLite)**: API rápida com Standard Library, autenticação por `X-API-Key`, e camada de storage plugável via interface `StorageProvider`.
-- **Frontend (React + Vite + TailwindCSS)**: SPA moderna com filtragem por Personas e categorização por metadados.
+- **Backend**: Go 1.22 + SQLite (Standard Library, zero framework)
+- **Frontend**: React 19 + Vite 8 + TailwindCSS 3
+- **Deploy**: Docker multi-stage (~30MB) + Nginx reverse proxy
 
-## Funcionalidades Chave
+## Deploy na VPS (Docker)
 
-- **Filtro por Personas**: Diferencia conteúdo entre _Editor de Vídeo_, _Programador/Data_ e _Designer_.
-- **Multi-Provider Upload**: Usuário escolhe o destino (HuggingFace, Internet Archive, Catbox.moe) no momento do upload.
-- **Gerenciamento de Licenças**: Suporta múltiplas tags de licenciamento (`CC0-1.0`, `CC-BY-NC`, `SUNO-NON-COMMERCIAL`).
-- **Orquestração Automática**: `monitor.sh` para iniciar/parar/reiniciar os serviços em rede local.
+```bash
+# 1. Configurar
+cp backend/.env.example backend/.env
+nano backend/.env
 
-## Como Executar
+# 2. Deploy
+docker compose up -d --build
 
-### Pré-requisitos
-- **Go** 1.22+
-- **Node.js** 20+
+# 3. Atualizar depois
+./update.sh
+```
 
-### Instalação e Uso Rápido
-1. Clone o repositório.
-2. Configure os provedores:
-   ```bash
-   cp backend/.env.example backend/.env
-   # Edite backend/.env com seus tokens
-   ```
-3. Na raiz do projeto, dê permissão ao monitor:
-   ```bash
-   chmod +x monitor.sh scripts/*.sh
-   ```
-4. Inicie o sistema interativo:
-   ```bash
-   ./monitor.sh
-   ```
-5. Selecione a opção **1) Iniciar Todos os Serviços**.
-6. Acesse a aplicação na URL fornecida (ex: `http://192.168.x.x:5173`).
+### Variáveis de Ambiente
+
+```env
+PORT=8090
+ADMIN_API_KEY=chave-secreta-forte
+HF_TOKEN=hf_...
+HF_DEFAULT_REPO=usuario/repo
+IA_ACCESS_KEY=...
+IA_SECRET_KEY=...
+IA_ITEM_ID=crom-dataset-uploads
+```
+
+## Desenvolvimento Local
+
+```bash
+# Backend
+cd backend && go run .
+
+# Frontend (outra aba)
+cd frontend && npm install && npm run dev
+
+# Ou use o monitor interativo
+chmod +x monitor.sh && ./monitor.sh
+```
+
+## API Endpoints
+
+| Endpoint | Método | Auth | Descrição |
+|----------|--------|------|-----------|
+| `/api/stats` | GET | — | Estatísticas públicas |
+| `/api/providers` | GET | — | Provedores de upload |
+| `/api/download/{id}` | GET | — | Download proxy (público) |
+| `/api/items` | GET | Token | Listar datasets |
+| `/api/items` | POST | Token | Criar dataset / upload |
+| `/api/items/{id}` | GET | Token | Detalhe do dataset |
+| `/api/licenses` | GET | Token | Listar licenças |
+| `/api/admin/tokens` | POST | Admin | Criar token de acesso |
+
+## Funcionalidades
+
+- **Multi-Provider Upload**: Usuário escolhe HuggingFace, Internet Archive ou Catbox no momento do upload
+- **Download Proxy**: URL do provedor nunca exposta — tudo passa por `/api/download/{id}`
+- **Filtro por Personas**: Dev, Vídeo, Design, Áudio
+- **Gerenciamento de Licenças**: CC0, CC-BY, CC-BY-NC, Suno, Proprietária
+- **Docker One-Shot**: `docker compose up -d --build` e pronto
 
 ---
 _Alicerçado na filosofia Crom de Soberania Digital._
