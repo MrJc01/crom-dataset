@@ -196,7 +196,7 @@ func (cb *CatboxProvider) Upload(fileBytes []byte, filename string) (string, err
 		return "", fmt.Errorf("erro ao criar requisição Catbox: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "CROM-Dataset/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CROMDataset/1.0)")
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
