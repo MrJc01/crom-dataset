@@ -191,10 +191,9 @@ func getSingleItemHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(item)
 }
 
-// downloadItemHandler redireciona o usuário para a URL real do provedor.
-// A URL do provedor NUNCA é exposta no HTML do frontend — o download
-// sempre passa por /api/download/{id}, e o backend faz 302 redirect.
-// Isso evita vazamento de referências externas.
+// downloadItemHandler faz proxy do download — busca o arquivo no provedor
+// e envia direto ao usuário com Content-Disposition: attachment.
+// A URL do provedor NUNCA é exposta — o browser vê apenas /api/download/{id}.
 func downloadItemHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -207,8 +206,8 @@ func downloadItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var metadataStr string
-	err := database.DB.QueryRow("SELECT provider_metadata FROM items WHERE id = ?", idStr).Scan(&metadataStr)
+	var metadataStr, title string
+	err := database.DB.QueryRow("SELECT provider_metadata, title FROM items WHERE id = ?", idStr).Scan(&metadataStr, &title)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "Dataset não encontrado", http.StatusNotFound)
@@ -230,8 +229,53 @@ func downloadItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[DOWNLOAD] Item %s → redirect para %s", idStr, downloadURL)
-	http.Redirect(w, r, downloadURL, http.StatusFound)
+	log.Printf("[DOWNLOAD] Item %s → proxy de %s", idStr, downloadURL)
+
+	// Busca o arquivo do provedor externo
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(downloadURL)
+	if err != nil {
+		log.Printf("[DOWNLOAD] Erro ao buscar do provedor: %v", err)
+		http.Error(w, "Erro ao buscar arquivo do provedor", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, fmt.Sprintf("Provedor retornou %d", resp.StatusCode), http.StatusBadGateway)
+		return
+	}
+
+	// Detecta o nome do arquivo a partir da URL
+	filename := title
+	parts := strings.Split(downloadURL, "/")
+	if len(parts) > 0 {
+		lastPart := parts[len(parts)-1]
+		// Remove query params
+		if idx := strings.Index(lastPart, "?"); idx > 0 {
+			lastPart = lastPart[:idx]
+		}
+		// Remove timestamp prefix (ex: 1778530897_)
+		if underIdx := strings.Index(lastPart, "_"); underIdx > 0 && underIdx < 15 {
+			lastPart = lastPart[underIdx+1:]
+		}
+		if lastPart != "" {
+			filename = lastPart
+		}
+	}
+
+	// Envia com Content-Disposition: attachment (força download)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+
+	io.Copy(w, resp.Body)
 }
 
 func getItemsHandler(w http.ResponseWriter, r *http.Request) {

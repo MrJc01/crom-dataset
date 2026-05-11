@@ -127,8 +127,7 @@ function DatasetDetail() {
             {hasDownload ? (
               <a 
                 href={downloadApiUrl}
-                target="_blank" 
-                rel="noreferrer"
+                download
                 className="w-full btn-primary text-center py-4 text-base font-semibold rounded-xl flex items-center justify-center gap-3 animate-pulse-glow"
                 id="btn-download-dataset"
               >
